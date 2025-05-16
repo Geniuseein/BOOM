@@ -60,7 +60,7 @@ abstract class AbstractRenameStage(
   val io = IO(new Bundle {
     val ren_stalls = Output(Vec(plWidth, Bool()))
 
-    val kill = Input(Bool())
+    val kill = Input(Bool()) // from IFU
 
     val dec_fire  = Input(Vec(plWidth, Bool())) // will commit state updates
     val dec_uops  = Input(Vec(plWidth, new MicroOp()))
@@ -70,7 +70,7 @@ abstract class AbstractRenameStage(
     val ren2_uops = Vec(plWidth, Output(new MicroOp()))
 
     // branch resolution (execute)
-    val brupdate = Input(new BrUpdateInfo())
+    val brupdate = Input(new BrUpdateInfo()) // from FU
 
     val dis_fire  = Input(Vec(coreWidth, Bool()))
     val dis_ready = Input(Bool())

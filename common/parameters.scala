@@ -94,6 +94,8 @@ case class BoomCoreParams(
   clockGate: Boolean = false,
   mcontextWidth: Int = 0,
   scontextWidth: Int = 0,
+  minWindowSize: Int = 4,
+  maxWindowSize: Int = 32,
 
   /* debug stuff */
   enableCommitLogPrintf: Boolean = false,
@@ -169,7 +171,9 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
 
   val numIntPhysRegs= boomParams.numIntPhysRegisters // size of the integer physical register file
   val numFpPhysRegs = boomParams.numFpPhysRegisters  // size of the floating point physical register file
-
+  val minWindowSize = boomParams.minWindowSize
+  val maxWindowSize = boomParams.maxWindowSize
+  
   //************************************
   // Functional Units
   val usingFDivSqrt = boomParams.fpu.isDefined && boomParams.fpu.get.divSqrt
@@ -262,6 +266,8 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val stqAddrSz       = log2Ceil(numStqEntries)
   val lsuAddrSz       = ldqAddrSz max stqAddrSz
   val brTagSz         = log2Ceil(maxBrCount)
+  val numWindows      = numRobEntries/minWindowSize
+  val windowIdSz      = log2Ceil(numWindows)
 
   require (numIntPhysRegs >= (32 + coreWidth))
   require (numFpPhysRegs >= (32 + coreWidth))

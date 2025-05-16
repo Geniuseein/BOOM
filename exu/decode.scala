@@ -504,6 +504,7 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
 
 //     cs.div && !csr.io.status.isa('m'-'a') || TODO check for illegal div instructions
 
+  // exceptions generated in decode stage
   def checkExceptions(x: Seq[(Bool, UInt)]) =
     (x.map(_._1).reduce(_||_), PriorityMux(x))
 
@@ -538,6 +539,7 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
   uop.lrs2_rtype := cs.rs2_type
   uop.frs3_en    := cs.frs3_en
 
+  uop.pdst_freed := false.B
   uop.ldst_is_rs1 := uop.is_sfb_shadow
   // SFB optimization
   when (uop.is_sfb_shadow && cs.rs2_type === RT_X) {
@@ -735,7 +737,7 @@ class BranchDecode(implicit p: Parameters) extends BoomModule
  * Track the current "branch mask", and give out the branch mask to each micro-op in Decode
  * (each micro-op in the machine has a branch mask which says which branches it
  * is being speculated under).
- *
+ * core.scala: 99
  * @param pl_width pipeline width for the processor
  */
 class BranchMaskGenerationLogic(val pl_width: Int)(implicit p: Parameters) extends BoomModule

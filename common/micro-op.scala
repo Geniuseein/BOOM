@@ -57,13 +57,16 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val iw_p1_poisoned   = Bool()
   val iw_p2_poisoned   = Bool()
 
-  val is_br            = Bool()                      // is this micro-op a (branch) vs a regular PC+4 inst?
+  val is_br            = Bool()                      // is this micro-op a (branch) vs a regular PC+4 inst?  // decode.scala:585
   val is_jalr          = Bool()                      // is this a jump? (jal or jalr)
   val is_jal           = Bool()                      // is this a JAL (doesn't include JR)? used for branch unit
   val is_sfb           = Bool()                      // is this a sfb or in the shadow of a sfb
 
   val br_mask          = UInt(maxBrCount.W)  // which branches are we being speculated under?
   val br_tag           = UInt(brTagSz.W)
+
+  val winIdx           = UInt(windowIdSz.W) // index into the window for this uop
+  val is_new_window    = Bool()              // is this uop the first in a new window?
 
   // Index into FTQ to figure out our fetch PC.
   val ftq_idx          = UInt(log2Ceil(ftqSz).W)
@@ -89,7 +92,10 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val prs2             = UInt(maxPregSz.W)
   val prs3             = UInt(maxPregSz.W)
   val ppred            = UInt(log2Ceil(ftqSz).W)
+  val pdst_freed       = Bool()              // has the destination been freed?
 
+  val rs1_winIdx       = UInt(windowIdSz.W) // index into the window for rs1
+  val rs2_winIdx       = UInt(windowIdSz.W) // index into the window for rs2
   val prs1_busy        = Bool()
   val prs2_busy        = Bool()
   val prs3_busy        = Bool()
