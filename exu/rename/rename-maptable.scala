@@ -33,11 +33,35 @@ class MapResp(val pregSz: Int) extends Bundle
   val stale_pdst = UInt(pregSz.W)
 }
 
+class MapRepsAdded(val windowIdSz: Int, val robAddrSz: Int) extends Bundle
+{
+  val robIdx1 = UInt(robAddrSz.W) // Added
+  val robIdx2 = UInt(robAddrSz.W) // Added
+  val robIdx3 = UInt(robAddrSz.W) // Added
+  val stale_robIdx = UInt(robAddrSz.W) // Added
+  val winIdx1 = UInt(windowIdSz.W) // Added
+  val winIdx2 = UInt(windowIdSz.W) // Added
+  val winIdx3 = UInt(windowIdSz.W) // Added
+  val stale_winIdx = UInt(windowIdSz.W) // Added
+}
+
 class RemapReq(val lregSz: Int, val pregSz: Int) extends Bundle
 {
   val ldst = UInt(lregSz.W)
   val pdst = UInt(pregSz.W)
   val valid = Bool()
+}
+
+class RemapReqAdded(val windowIdSz: Int, val robAddrSz: Int) extends Bundle
+{
+  val winIdx = UInt(windowIdSz.W) // Added
+  val robIdx = UInt(robAddrSz.W) // Added
+}
+
+class MapTableEntry(pregSz: Int, windowIdSz: Int, robAddrSz: Int) extends Bundle {
+  val preg = UInt(pregSz.W)
+  val winIdx = UInt(windowIdSz.W)
+  val robIdx = UInt(robAddrSz.W)
 }
 
 class RenameMapTable(
@@ -54,9 +78,11 @@ class RenameMapTable(
     // Logical sources -> physical sources.
     val map_reqs    = Input(Vec(plWidth, new MapReq(lregSz)))
     val map_resps   = Output(Vec(plWidth, new MapResp(pregSz)))
+    val map_resps_added = Output(Vec(plWidth, new MapRepsAdded(pregSz, robAddrSz)))
 
     // Remapping an ldst to a newly allocated pdst?
     val remap_reqs  = Input(Vec(plWidth, new RemapReq(lregSz, pregSz)))
+    val remap_reqs_added = Input(Vec(plWidth, new RemapReqAdded(windowIdSz, robAddrSz)))
 
     // Dispatching branches: need to take snapshots of table state.
     val ren_br_tags = Input(Vec(plWidth, Valid(UInt(brTagSz.W))))
@@ -67,28 +93,44 @@ class RenameMapTable(
   })
 
   // The map table register array and its branch snapshots.
-  val map_table = RegInit(VecInit(Seq.fill(numLregs){0.U(pregSz.W)}))
-  val br_snapshots = Reg(Vec(maxBrCount, Vec(numLregs, UInt(pregSz.W))))
+  val map_table = RegInit(VecInit(Seq.fill(numLregs) {
+    val entry = Wire(new MapTableEntry(pregSz, windowIdSz, robAddrSz))
+    entry.preg   := 0.U
+    entry.winIdx := 0.U
+    entry.robIdx := 0.U
+    entry
+  }))
+  val br_snapshots = Reg(Vec(maxBrCount, Vec(numLregs, new MapTableEntry(pregSz, windowIdSz, robAddrSz))))
 
   // The intermediate states of the map table following modification by each pipeline slot.
-  val remap_table = Wire(Vec(plWidth+1, Vec(numLregs, UInt(pregSz.W))))
+  val remap_table = Wire(Vec(plWidth+1, Vec(numLregs, new MapTableEntry(pregSz, windowIdSz, robAddrSz))))
 
   // Uops requesting changes to the map table.
   val remap_pdsts = io.remap_reqs map (_.pdst)
+  val remap_winIdx = io.remap_reqs_added map (_.winIdx)
+  val remap_robIdx = io.remap_reqs_added map (_.robIdx)
   val remap_ldsts_oh = io.remap_reqs map (req => UIntToOH(req.ldst) & Fill(numLregs, req.valid.asUInt))
 
   // Figure out the new mappings seen by each pipeline slot.
   for (i <- 0 until numLregs) {
-    if (i == 0 && !float) {
-      for (j <- 0 until plWidth+1) {
+    if (i == 0 && !float) { // i -> lregs
+      for (j <- 0 until plWidth+1) { // j -> pipeline slots
         remap_table(j)(i) := 0.U
       }
     } else {
-      val remapped_row = (remap_ldsts_oh.map(ldst => ldst(i)) zip remap_pdsts)
-        .scanLeft(map_table(i)) {case (pdst, (ldst, new_pdst)) => Mux(ldst, new_pdst, pdst)}
+      val remapped_row_pdsts = (remap_ldsts_oh.map(ldst => ldst(i)) zip remap_pdsts)
+        .scanLeft(map_table(i).preg) {case (pdst, (ldst, new_pdst)) => Mux(ldst, new_pdst, pdst)}
 
+      val remapped_row_winIdx = (remap_ldsts_oh.map(ldst => ldst(i)) zip remap_winIdx)
+        .scanLeft(map_table(i).winIdx) {case (winIdx, (ldst, new_winIdx)) => Mux(ldst, new_winIdx, winIdx)}
+
+      val remapped_row_robIdx = (remap_ldsts_oh.map(ldst => ldst(i)) zip remap_robIdx)
+        .scanLeft(map_table(i).robIdx) {case (robIdx, (ldst, new_robIdx)) => Mux(ldst, new_robIdx, robIdx)}
+      
       for (j <- 0 until plWidth+1) {
-        remap_table(j)(i) := remapped_row(j)
+        remap_table(j)(i).preg := remapped_row_pdsts(j)
+        remap_table(j)(i).winIdx := remapped_row_winIdx(j)
+        remap_table(j)(i).robIdx := remapped_row_robIdx(j)
       }
     }
   }
@@ -108,18 +150,69 @@ class RenameMapTable(
     map_table := remap_table(plWidth)
   }
 
+  private def query_preg(slotIdx: Int, lreg: UInt): UInt = {
+    // start from the static map_table mapping
+    val base = map_table(lreg).preg
+    // fold through all earlier renames 0 until slotIdx
+    (0 until slotIdx).foldLeft(base) { (preg, k) =>
+      val req = io.remap_reqs(k)
+      Mux(
+        bypass.B && req.valid && req.ldst === lreg,
+        req.pdst,
+        preg
+      )
+    }
+  }
+
+  private def query_winIdx(slotIdx: Int, lreg: UInt): UInt = {
+    // start from the static map_table mapping
+    val base = map_table(lreg).winIdx
+    // fold through all earlier renames 0 until slotIdx
+    (0 until slotIdx).foldLeft(base) { (winIdx, k) =>
+      val req = io.remap_reqs(k)
+      Mux(
+        bypass.B && req.valid && req.ldst === lreg,
+        io.remap_reqs_added(k).winIdx,
+        winIdx
+      )
+    }
+  }
+
+  private def query_robIdx(slotIdx: Int, lreg: UInt): UInt = {
+    // start from the static map_table mapping
+    val base = map_table(lreg).robIdx
+    // fold through all earlier renames 0 until slotIdx
+    (0 until slotIdx).foldLeft(base) { case (robIdx, k) =>
+      val req = io.remap_reqs(k)
+      Mux(
+        bypass.B && req.valid && req.ldst === lreg,
+        io.remap_reqs_added(k).robIdx,
+        robIdx
+      )
+    }
+  }
+
   // Read out mappings.
   for (i <- 0 until plWidth) {
-    io.map_resps(i).prs1       := (0 until i).foldLeft(map_table(io.map_reqs(i).lrs1)) ((p,k) =>
-      Mux(bypass.B && io.remap_reqs(k).valid && io.remap_reqs(k).ldst === io.map_reqs(i).lrs1, io.remap_reqs(k).pdst, p))
-    io.map_resps(i).prs2       := (0 until i).foldLeft(map_table(io.map_reqs(i).lrs2)) ((p,k) =>
-      Mux(bypass.B && io.remap_reqs(k).valid && io.remap_reqs(k).ldst === io.map_reqs(i).lrs2, io.remap_reqs(k).pdst, p))
-    io.map_resps(i).prs3       := (0 until i).foldLeft(map_table(io.map_reqs(i).lrs3)) ((p,k) =>
-      Mux(bypass.B && io.remap_reqs(k).valid && io.remap_reqs(k).ldst === io.map_reqs(i).lrs3, io.remap_reqs(k).pdst, p))
-    io.map_resps(i).stale_pdst := (0 until i).foldLeft(map_table(io.map_reqs(i).ldst)) ((p,k) =>
-      Mux(bypass.B && io.remap_reqs(k).valid && io.remap_reqs(k).ldst === io.map_reqs(i).ldst, io.remap_reqs(k).pdst, p))
+    // basic physical‐reg lookups
+    io.map_resps(i).prs1       := query_preg(i, io.map_reqs(i).lrs1)
+    io.map_resps(i).prs2       := query_preg(i, io.map_reqs(i).lrs2)
+    io.map_resps(i).prs3       := query_preg(i, io.map_reqs(i).lrs3)
+    io.map_resps(i).stale_pdst := query_preg(i, io.map_reqs(i).ldst)
+
+    // newly added window‐indices and ROB‐indices for each source
+    io.map_resps_added(i).robIdx1 := query_robIdx(i, io.map_reqs(i).lrs1)
+    io.map_resps_added(i).robIdx2 := query_robIdx(i, io.map_reqs(i).lrs2)
+    io.map_resps_added(i).robIdx3 := query_robIdx(i, io.map_reqs(i).lrs3)
+    io.map_resps_added(i).stale_robIdx := query_robIdx(i, io.map_reqs(i).ldst)
+    io.map_resps_added(i).winIdx1 := query_winIdx(i, io.map_reqs(i).lrs1)
+    io.map_resps_added(i).winIdx2 := query_winIdx(i, io.map_reqs(i).lrs2)
+    io.map_resps_added(i).winIdx3 := query_winIdx(i, io.map_reqs(i).lrs3)
+    io.map_resps_added(i).stale_winIdx := query_winIdx(i, io.map_reqs(i).ldst)
 
     if (!float) io.map_resps(i).prs3 := DontCare
+    if (!float) io.map_resps_added(i).robIdx3 := DontCare
+    if (!float) io.map_resps_added(i).winIdx3 := DontCare
   }
 
   // Don't flag the creation of duplicate 'p0' mappings during rollback.
